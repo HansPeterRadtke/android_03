@@ -1,0 +1,41 @@
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath "com.android.tools.build:gradle:7.0.4"
+    }
+}
+plugins {
+    id 'com.android.application'
+}
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+dependencies {
+    implementation("org.jetbrains.kotlin:kotlin-stdlib:1.8.10")
+    implementation('androidx.core:core:1.12.0')
+}
+android {
+    namespace 'myapp.app'
+    compileSdk 34
+    defaultConfig {
+        applicationId "myapp.app"
+        minSdk 21
+        targetSdk 34
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+    packagingOptions {
+        resources {
+            excludes += ['META-INF/LGPL2.1']
+        }
+    }
+}
