@@ -9,19 +9,26 @@ import android.widget.TextView;
 import android.widget.LinearLayout;
 import android.view.ViewGroup.LayoutParams;
 import android.view.ViewGroup;
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.net.HttpURLConnection;
-import java.net.URL;
+
+import org.java_websocket.client.WebSocketClient;
+import org.java_websocket.handshake.ServerHandshake;
+
+import java.io.ByteArrayOutputStream;
+import java.net.URI;
+import java.nio.ByteBuffer;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
-import android.util.Log;
+import java.util.Timer;
+import java.util.TimerTask;
+
+import org.json.JSONObject;
 
 public class MainActivity extends Activity {
 
   private ScrollView scrollView;
-  private TextView   textView  ;
+  private TextView textView;
+  private WebSocketClient wsClient;
 
   @Override
   protected void onCreate(Bundle savedInstanceState) {
@@ -34,11 +41,15 @@ public class MainActivity extends Activity {
     button.setText("Button");
     layout.addView(button, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
 
+    Button speedTestButton = new Button(this);
+    speedTestButton.setText("Speed Test");
+    layout.addView(speedTestButton, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
+
     textView = new TextView(this);
-    textView.setLayoutParams    (new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+    textView.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
     textView.setTextIsSelectable(true);
-    textView.setSingleLine      (false);
-    textView.setMaxLines        (Integer.MAX_VALUE);
+    textView.setSingleLine(false);
+    textView.setMaxLines(Integer.MAX_VALUE);
 
     scrollView = new ScrollView(this);
     scrollView.setFillViewport(true);
@@ -46,55 +57,87 @@ public class MainActivity extends Activity {
     scrollView.addView(textView);
     layout.addView(scrollView);
 
-    button.setOnClickListener(new View.OnClickListener() {
-      @Override
-      public void onClick(View v) {
-        final String timestamp = new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date());
-        new Thread(new Runnable() {
-          @Override
-          public void run() {
-            try {
-              URL url = new URL("http://android.jonnyonthefly.org/?msg=test");
-              HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-              connection.setRequestMethod("GET");
-              BufferedReader in = new BufferedReader(new InputStreamReader(connection.getInputStream()));
-              String inputLine;
-              StringBuilder response = new StringBuilder();
-              while ((inputLine = in.readLine()) != null) {
-                response.append(inputLine);
-              }
-              in.close();
-              final String result = response.toString();
-              runOnUiThread(new Runnable() {
-                @Override
-                public void run() {
-                  print("[" + timestamp + "] Response: " + result);
-                }
-              });
-            } catch (final Exception e) {
-              final String fullError = Log.getStackTraceString(e);
-              runOnUiThread(new Runnable() {
-                @Override
-                public void run() {
-                  print("[" + timestamp + "] Error: " + fullError);
-                }
-              });
-            }
-          }
-        }).start();
+    setContentView(layout);
+
+    try {
+      URI uri = new URI("ws://android.jonnyonthefly.org");
+      wsClient = new WebSocketClient(uri) {
+        @Override
+        public void onOpen(ServerHandshake handshake) {
+          print("[INFO] WebSocket Connected");
+        }
+
+        @Override
+        public void onMessage(String message) {
+          print("[DEBUG] Received: " + message);
+        }
+
+        @Override
+        public void onMessage(ByteBuffer bytes) {
+          print("[DEBUG] Received " + bytes.remaining() + " binary bytes");
+        }
+
+        @Override
+        public void onClose(int code, String reason, boolean remote) {
+          print("[INFO] WebSocket Closed: " + reason);
+        }
+
+        @Override
+        public void onError(Exception ex) {
+          print("[ERROR] WebSocket Error: " + ex.toString());
+        }
+      };
+      wsClient.connect();
+    } catch (Exception e) {
+      print("[ERROR] WebSocket Init Failed: " + e.toString());
+    }
+
+    button.setOnClickListener(v -> {
+      try {
+        JSONObject obj = new JSONObject();
+        obj.put("msg", "test");
+        print("[DEBUG] Sending message test");
+        wsClient.send(obj.toString());
+      } catch (Exception e) {
+        print("[ERROR] Failed to send message: " + e.toString());
       }
     });
 
-    setContentView(layout);
+    speedTestButton.setOnClickListener(v -> {
+      try {
+        int size = 1000000;
+        JSONObject obj = new JSONObject();
+        obj.put("size", size);
+        wsClient.send(obj.toString());
+
+        byte[] data = new byte[size];
+        for (int i = 0; i < size; i++) data[i] = 'x';
+
+        print("[DEBUG] Sending " + size + " bytes");
+        long start = System.currentTimeMillis();
+        wsClient.send(data);
+
+        Timer timer = new Timer();
+        timer.schedule(new TimerTask() {
+          @Override
+          public void run() {
+            long end = System.currentTimeMillis();
+            double seconds = (end - start) / 1000.0;
+            double speed = size / seconds;
+            print("[INFO] Bandwidth: " + String.format(Locale.US, "%.2f bytes/sec", speed));
+            timer.cancel();
+          }
+        }, 10000);
+      } catch (Exception e) {
+        print("[ERROR] Speed test failed: " + e.toString());
+      }
+    });
   }
 
   private void print(String msg) {
-    textView.append(msg + "\n");
-    scrollView.post(new Runnable() {
-      @Override
-      public void run() {
-        scrollView.fullScroll(View.FOCUS_DOWN);
-      }
+    runOnUiThread(() -> {
+      textView.append("[" + new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date()) + "] " + msg + "\n");
+      scrollView.post(() -> scrollView.fullScroll(View.FOCUS_DOWN));
     });
   }
 }
