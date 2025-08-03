@@ -1,6 +1,11 @@
 package myapp.app;
 
+import android.Manifest;
 import android.app.Activity;
+import android.content.pm.PackageManager;
+import android.media.AudioFormat;
+import android.media.AudioRecord;
+import android.media.MediaRecorder;
 import android.os.Bundle;
 import android.view.View;
 import android.widget.Button;
@@ -9,6 +14,9 @@ import android.widget.TextView;
 import android.widget.LinearLayout;
 import android.view.ViewGroup.LayoutParams;
 import android.view.ViewGroup;
+
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 
 import org.java_websocket.client.WebSocketClient;
 import org.java_websocket.handshake.ServerHandshake;
@@ -29,21 +37,33 @@ public class MainActivity extends Activity {
   private ScrollView scrollView;
   private TextView textView;
   private WebSocketClient wsClient;
+  private int totalReceived = 0;
+  private int nextLogThreshold = 100000;
+  private boolean isRecording = false;
+  private Thread recordingThread;
 
   @Override
   protected void onCreate(Bundle savedInstanceState) {
     super.onCreate(savedInstanceState);
 
+    if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+      ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.RECORD_AUDIO}, 1);
+    }
+
     LinearLayout layout = new LinearLayout(this);
     layout.setOrientation(LinearLayout.VERTICAL);
 
     Button button = new Button(this);
-    button.setText("Button");
+    button.setText("Send test message");
     layout.addView(button, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
 
     Button speedTestButton = new Button(this);
     speedTestButton.setText("Speed Test");
     layout.addView(speedTestButton, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
+
+    Button recordButton = new Button(this);
+    recordButton.setText("Start Recording");
+    layout.addView(recordButton, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
 
     textView = new TextView(this);
     textView.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -70,11 +90,24 @@ public class MainActivity extends Activity {
         @Override
         public void onMessage(String message) {
           print("[DEBUG] Received: " + message);
+          try {
+            JSONObject obj = new JSONObject(message);
+            if (obj.has("transcription")) {
+              print("[INFO] Transcription: " + obj.getString("transcription"));
+            }
+          } catch (Exception e) {
+            print("[ERROR] Failed to parse server response: " + e.toString());
+          }
         }
 
         @Override
         public void onMessage(ByteBuffer bytes) {
-          print("[DEBUG] Received " + bytes.remaining() + " binary bytes");
+          int len = bytes.remaining();
+          totalReceived += len;
+          if (totalReceived >= nextLogThreshold) {
+            print("[DEBUG] Total received: " + totalReceived);
+            nextLogThreshold += 100000;
+          }
         }
 
         @Override
@@ -130,6 +163,52 @@ public class MainActivity extends Activity {
         }, 10000);
       } catch (Exception e) {
         print("[ERROR] Speed test failed: " + e.toString());
+      }
+    });
+
+    recordButton.setOnClickListener(v -> {
+      if (isRecording) {
+        isRecording = false;
+        print("[INFO] Stopped recording.");
+      } else {
+        isRecording = true;
+        print("[INFO] Started recording.");
+        recordingThread = new Thread(() -> {
+          try {
+            int sampleRate = 16000;
+            int bufferSize = AudioRecord.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
+            AudioRecord recorder = new AudioRecord(MediaRecorder.AudioSource.MIC, sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize);
+
+            byte[] buffer = new byte[bufferSize];
+            ByteArrayOutputStream audioData = new ByteArrayOutputStream();
+            recorder.startRecording();
+
+            while (isRecording) {
+              int read = recorder.read(buffer, 0, buffer.length);
+              if (read > 0) {
+                audioData.write(buffer, 0, read);
+              }
+            }
+
+            recorder.stop();
+            recorder.release();
+            byte[] finalData = audioData.toByteArray();
+            audioData.close();
+
+            print("[DEBUG] Sending audio init message (" + finalData.length + " bytes)");
+            JSONObject init = new JSONObject();
+            init.put("audio", true);
+            init.put("length", finalData.length);
+            wsClient.send(init.toString());
+
+            print("[DEBUG] Streaming audio data...");
+            wsClient.send(finalData);
+
+          } catch (Exception e) {
+            print("[ERROR] Recording/send failed: " + e.toString());
+          }
+        });
+        recordingThread.start();
       }
     });
   }
