@@ -175,6 +175,7 @@ public class MainActivity extends Activity {
         print("[INFO] Started recording.");
         recordingThread = new Thread(() -> {
           try {
+            long recStart = System.currentTimeMillis();
             int sampleRate = 16000;
             int bufferSize = AudioRecord.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
             AudioRecord recorder = new AudioRecord(MediaRecorder.AudioSource.MIC, sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize);
@@ -194,6 +195,8 @@ public class MainActivity extends Activity {
             recorder.release();
             byte[] finalData = audioData.toByteArray();
             audioData.close();
+            long recEnd = System.currentTimeMillis();
+            print("[DEBUG] Recording took " + (recEnd - recStart) + " ms");
 
             print("[DEBUG] Sending audio init message (" + finalData.length + " bytes)");
             JSONObject init = new JSONObject();
@@ -201,8 +204,11 @@ public class MainActivity extends Activity {
             init.put("length", finalData.length);
             wsClient.send(init.toString());
 
+            long sendStart = System.currentTimeMillis();
             print("[DEBUG] Streaming audio data...");
             wsClient.send(finalData);
+            long sendEnd = System.currentTimeMillis();
+            print("[DEBUG] Audio send took " + (sendEnd - sendStart) + " ms");
 
           } catch (Exception e) {
             print("[ERROR] Recording/send failed: " + e.toString());
