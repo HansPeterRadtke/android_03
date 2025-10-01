@@ -30,6 +30,8 @@ import java.text.SimpleDateFormat;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicReference;
 
+import com.github.gkonovalov.vad.Vad;
+
 public class MainActivity extends Activity {
 
   private ScrollView scrollView;
@@ -113,6 +115,9 @@ public class MainActivity extends Activity {
         AudioRecord recorder = new AudioRecord(MediaRecorder.AudioSource.MIC, sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize);
         audioTrack = new AudioTrack(AudioManager.STREAM_MUSIC, sampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize, AudioTrack.MODE_STREAM);
 
+        Vad vad = new Vad();
+        vad.setMode(Vad.Mode.NORMAL);
+
         if (recorder.getState() != AudioRecord.STATE_INITIALIZED) {
           print("[ERROR] AudioRecorder not initialized.");
           return;
@@ -128,12 +133,17 @@ public class MainActivity extends Activity {
           if (read > 0) {
             byte[] chunk = new byte[read];
             System.arraycopy(buffer, 0, chunk, 0, read);
-            try {
-              wsClient.send(chunk);
-            } catch (Exception e) {
-              print("[ERROR] Failed to send chunk. Reinitializing. " + e);
-              initWebSocket();
-              break;
+            boolean isSpeech = vad.isSpeech(chunk, sampleRate);
+            if (isSpeech) {
+              try {
+                wsClient.send(chunk);
+              } catch (Exception e) {
+                print("[ERROR] Failed to send chunk. Reinitializing. " + e);
+                initWebSocket();
+                break;
+              }
+            } else {
+              print("[DEBUG] Silence skipped");
             }
           }
         }
