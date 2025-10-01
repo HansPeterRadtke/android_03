@@ -5,6 +5,8 @@ import android.app.Activity;
 import android.content.pm.PackageManager;
 import android.media.AudioFormat;
 import android.media.AudioRecord;
+import android.media.AudioTrack;
+import android.media.AudioManager;
 import android.media.MediaRecorder;
 import android.os.Bundle;
 import android.view.View;
@@ -23,21 +25,20 @@ import org.java_websocket.handshake.ServerHandshake;
 
 import java.net.URI;
 import java.nio.ByteBuffer;
-import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.text.SimpleDateFormat;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicReference;
-
-import org.json.JSONObject;
 
 public class MainActivity extends Activity {
 
   private ScrollView scrollView;
   private TextView textView;
   private final AtomicReference<WebSocketClient> wsClientRef = new AtomicReference<>(null);
-  private boolean isRecording = false;
-  private Thread recordingThread;
-  private Button recordButton;
+  private boolean isStreaming = false;
+  private Thread streamingThread;
+  private Button streamButton;
+  private AudioTrack audioTrack;
 
   @Override
   protected void onCreate(Bundle savedInstanceState) {
@@ -50,9 +51,9 @@ public class MainActivity extends Activity {
     LinearLayout layout = new LinearLayout(this);
     layout.setOrientation(LinearLayout.VERTICAL);
 
-    recordButton = new Button(this);
-    recordButton.setText("Start Recording");
-    layout.addView(recordButton, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
+    streamButton = new Button(this);
+    streamButton.setText("Start Streaming");
+    layout.addView(streamButton, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
 
     textView = new TextView(this);
     textView.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -70,78 +71,83 @@ public class MainActivity extends Activity {
 
     initWebSocket();
 
-    recordButton.setOnClickListener(v -> {
-      if (isRecording) {
-        isRecording = false;
-        recordButton.setText("Start Recording");
-        print("[INFO] Stopped recording.");
-        if (recordingThread != null && recordingThread.isAlive()) {
+    streamButton.setOnClickListener(v -> {
+      if (isStreaming) {
+        isStreaming = false;
+        streamButton.setText("Start Streaming");
+        print("[INFO] Stopped streaming.");
+        if (streamingThread != null && streamingThread.isAlive()) {
           try {
-            recordingThread.join();
+            streamingThread.join();
           } catch (InterruptedException e) {
-            print("[ERROR] Thread join interrupted: " + e.toString());
+            print("[ERROR] Thread join interrupted: " + e);
           }
         }
       } else {
-        isRecording = true;
-        recordButton.setText("Stop Recording");
-        print("[INFO] Started recording.");
-        recordingThread = new Thread(() -> {
-          try {
-            WebSocketClient wsClient;
-            int retries = 0;
-            while (((wsClient = wsClientRef.get()) == null || !wsClient.isOpen()) && retries < 50) {
-              print("[DEBUG] Waiting for WebSocket to open...");
-              Thread.sleep(100);
-              retries++;
-            }
-            if (wsClient == null || !wsClient.isOpen()) {
-              print("[ERROR] WebSocket not ready. Reinitializing.");
-              initWebSocket();
-              return;
-            }
-
-            int sampleRate = 16000;
-            int bufferSize = AudioRecord.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
-            AudioRecord recorder = new AudioRecord(MediaRecorder.AudioSource.MIC, sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize);
-            if (recorder.getState() != AudioRecord.STATE_INITIALIZED) {
-              print("[ERROR] AudioRecorder not initialized.");
-              return;
-            }
-
-            byte[] buffer = new byte[bufferSize];
-            recorder.startRecording();
-
-            JSONObject init = new JSONObject();
-            init.put("audio", true);
-            init.put("length", -1);
-            print("[DEBUG] Sending init JSON: " + init.toString());
-            wsClient.send(init.toString());
-
-            while (isRecording) {
-              int read = recorder.read(buffer, 0, buffer.length);
-              if (read > 0) {
-                byte[] chunk = new byte[read];
-                System.arraycopy(buffer, 0, chunk, 0, read);
-                try {
-                  wsClient.send(chunk);
-                } catch (Exception e) {
-                  print("[ERROR] Failed to send chunk. Reinitializing. " + e.toString());
-                  initWebSocket();
-                  break;
-                }
-              }
-            }
-
-            recorder.stop();
-            recorder.release();
-          } catch (Exception e) {
-            print("[ERROR] Streaming recording failed: " + e.toString());
-          }
-        });
-        recordingThread.start();
+        isStreaming = true;
+        streamButton.setText("Stop Streaming");
+        print("[INFO] Started streaming.");
+        startStreaming();
       }
     });
+  }
+
+  private void startStreaming() {
+    streamingThread = new Thread(() -> {
+      try {
+        WebSocketClient wsClient;
+        int retries = 0;
+        while (((wsClient = wsClientRef.get()) == null || !wsClient.isOpen()) && retries < 50) {
+          print("[DEBUG] Waiting for WebSocket to open...");
+          Thread.sleep(100);
+          retries++;
+        }
+        if (wsClient == null || !wsClient.isOpen()) {
+          print("[ERROR] WebSocket not ready. Reinitializing.");
+          initWebSocket();
+          return;
+        }
+
+        int sampleRate = 16000;
+        int bufferSize = AudioRecord.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
+        AudioRecord recorder = new AudioRecord(MediaRecorder.AudioSource.MIC, sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize);
+        audioTrack = new AudioTrack(AudioManager.STREAM_MUSIC, sampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize, AudioTrack.MODE_STREAM);
+
+        if (recorder.getState() != AudioRecord.STATE_INITIALIZED) {
+          print("[ERROR] AudioRecorder not initialized.");
+          return;
+        }
+
+        recorder.startRecording();
+        audioTrack.play();
+
+        byte[] buffer = new byte[bufferSize];
+
+        while (isStreaming) {
+          int read = recorder.read(buffer, 0, buffer.length);
+          if (read > 0) {
+            byte[] chunk = new byte[read];
+            System.arraycopy(buffer, 0, chunk, 0, read);
+            try {
+              wsClient.send(chunk);
+            } catch (Exception e) {
+              print("[ERROR] Failed to send chunk. Reinitializing. " + e);
+              initWebSocket();
+              break;
+            }
+          }
+        }
+
+        recorder.stop();
+        recorder.release();
+        audioTrack.stop();
+        audioTrack.release();
+
+      } catch (Exception e) {
+        print("[ERROR] Streaming failed: " + e);
+      }
+    });
+    streamingThread.start();
   }
 
   private void initWebSocket() {
@@ -151,44 +157,38 @@ public class MainActivity extends Activity {
         @Override
         public void onOpen(ServerHandshake handshake) {
           print("[INFO] WebSocket Connected");
-          runOnUiThread(() -> recordButton.setEnabled(true));
-        }
-
-        @Override
-        public void onMessage(String message) {
-          print("[DEBUG] Raw message from server: " + message);
-          try {
-            JSONObject obj = new JSONObject(message);
-            if (obj.has("transcription")) {
-              print("[INFO] Transcription: " + obj.getString("transcription"));
-            } else {
-              print("[DEBUG] JSON received but no transcription key");
-            }
-          } catch (Exception e) {
-            print("[ERROR] Failed to parse server response: " + e.toString());
-          }
+          runOnUiThread(() -> streamButton.setEnabled(true));
         }
 
         @Override
         public void onMessage(ByteBuffer bytes) {
-          print("[DEBUG] Received binary chunk of " + bytes.remaining() + " bytes");
+          if (audioTrack != null) {
+            byte[] data = new byte[bytes.remaining()];
+            bytes.get(data);
+            audioTrack.write(data, 0, data.length);
+          }
+        }
+
+        @Override
+        public void onMessage(String message) {
+          print("[INFO] Received text message (ignored): " + message);
         }
 
         @Override
         public void onClose(int code, String reason, boolean remote) {
           print("[INFO] WebSocket Closed: " + reason);
-          runOnUiThread(() -> recordButton.setEnabled(false));
+          runOnUiThread(() -> streamButton.setEnabled(false));
         }
 
         @Override
         public void onError(Exception ex) {
-          print("[ERROR] WebSocket Error: " + ex.toString());
+          print("[ERROR] WebSocket Error: " + ex);
         }
       };
       wsClientRef.set(newClient);
       newClient.connect();
     } catch (Exception e) {
-      print("[ERROR] WebSocket Init Failed: " + e.toString());
+      print("[ERROR] WebSocket Init Failed: " + e);
     }
   }
 
